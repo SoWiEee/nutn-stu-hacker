@@ -257,35 +257,100 @@ def main():
                                 # 逐列掃描所有的 <tr>
                                 for row in bulletin_soup.find_all("tr"):
                                     cols = row.find_all(["td", "th"])
-                                    # 如果這列有 3 個以上的欄位，才有可能是真正的公告
                                     if len(cols) >= 3:
-                                        # 取出文字並清理空白
                                         col_texts = [col.text.strip() for col in cols if col.text.strip()]
                                         row_string = " | ".join(col_texts)
                                         
-                                        # 關鍵過濾：這行文字裡面必須要有 YYYY-MM-DD 的日期格式
+                                        # 過濾出真正的公告列
                                         if re.search(r'\d{4}-\d{2}-\d{2}', row_string):
-                                            # 如果第一個字是「檢視」，我們把它拿掉讓畫面更好看
+                                            # 抓取「檢視」按鈕的連結或 PostBack 指令
+                                            action_link = ""
+                                            a_tag = cols[0].find("a")
+                                            if a_tag:
+                                                action_link = a_tag.get("href", "")
+                                                
                                             if col_texts[0] == "檢視":
                                                 col_texts = col_texts[1:]
-                                            announcements.append(col_texts)
+                                                
+                                            if len(col_texts) >= 3:
+                                                announcements.append({
+                                                    "date": col_texts[0],
+                                                    "title": col_texts[1],
+                                                    "valid": col_texts[2],
+                                                    "action": action_link
+                                                })
 
-                                print(f"\n=== 📢 教師公告 ({safe_course_folder}) ===")
-                                if not announcements:
-                                    print("📭 目前沒有任何教師公告。")
-                                else:
-                                    # 漂亮排版印出公告
-                                    for ann in announcements:
-                                        # 預期格式: [公告日期, 公告標題, 有效日期]
-                                        if len(ann) >= 3:
-                                            date = ann[0]
-                                            title = ann[1]
-                                            valid = ann[2]
-                                            print(f"📅 {date} | 📌 {title} (有效至: {valid})")
+                                # 建立一個公告互動子選單
+                                while True:
+                                    print(f"\n=== 📢 教師公告 ({safe_course_folder}) ===")
+                                    if not announcements:
+                                        print("📭 目前沒有任何教師公告。")
+                                        break
+                                    else:
+                                        for i, ann in enumerate(announcements, 1):
+                                            print(f"[{i}] 📅 {ann['date']} | 📌 {ann['title']} (有效至: {ann['valid']})")
+                                    print("=========================================")
+                                    
+                                    ann_choice = input("\n請輸入要檢視的公告編號 (輸入 q 返回課程選單): ")
+                                    if ann_choice.lower() == 'q':
+                                        break
+                                    elif ann_choice.isdigit():
+                                        idx = int(ann_choice) - 1
+                                        if 0 <= idx < len(announcements):
+                                            selected_ann = announcements[idx]
+                                            print(f"\n-> 正在讀取公告: {selected_ann['title']} ...")
+                                            
+                                            js_code = selected_ann['action']
+                                            detail_res = None
+                                            
+                                            # 判斷是 PostBack 還是單純的超連結
+                                            if "javascript:__doPostBack" in js_code:
+                                                match = re.search(r"__doPostBack\('(.*?)','(.*?)'\)", js_code)
+                                                if match:
+                                                    event_target = match.group(1)
+                                                    event_argument = match.group(2)
+                                                    
+                                                    # 組合 Payload 發送請求
+                                                    bulletin_hidden = extract_hidden_fields(bulletin_soup)
+                                                    postback_payload = bulletin_hidden.copy()
+                                                    postback_payload["__EVENTTARGET"] = event_target
+                                                    postback_payload["__EVENTARGUMENT"] = event_argument
+                                                    
+                                                    detail_res = session.post(bulletin_url, data=postback_payload, verify=False)
+                                            elif js_code:
+                                                detail_res = session.get(urljoin(bulletin_url, js_code), verify=False)
+
+                                            if detail_res:
+                                                detail_soup = BeautifulSoup(detail_res.text, "html.parser")
+                                                
+                                                # 直接透過 ID 精準定位日期、標題與內文
+                                                date_span = detail_soup.find("span", id="ctl00_ContentPlaceHolder1_Label1")
+                                                title_span = detail_soup.find("span", id="ctl00_ContentPlaceHolder1_Label2")
+                                                content_span = detail_soup.find("span", id="ctl00_ContentPlaceHolder1_Label3")
+                                                
+                                                print("\n" + "═" * 50)
+                                                if title_span and content_span:
+                                                    print(f"📌 標題: {title_span.text.strip()}")
+                                                    if date_span:
+                                                        print(f"📅 日期: {date_span.text.strip()}")
+                                                    print("─" * 50)
+                                                    
+                                                    # 關鍵技巧：使用 get_text(separator="\n") 將網頁的 <br/> 轉換為終端機的真實換行
+                                                    content_text = content_span.get_text(separator="\n").strip()
+                                                    
+                                                    # 簡單清理一下多餘的連續換行，讓排版更好看
+                                                    content_text = re.sub(r'\n{3,}', '\n\n', content_text)
+                                                    print(content_text)
+                                                else:
+                                                    print("⚠️ 無法解析這篇公告的內文，這篇可能格式比較特殊。")
+                                                print("═" * 50 + "\n")
+                                                
+                                                # 看完一篇後暫停一下，讓使用者看完再按 Enter 返回選單
+                                                input("👉 按下 [Enter] 鍵返回公告列表...")
+                                            else:
+                                                print("❌ 無法獲取公告內容，可能是無效的連結。")
                                         else:
-                                            # 防呆：如果格式不符合預期，就直接印出來
-                                            print(" | ".join(ann))
-                                print("=========================================")
+                                            print("❌ 無效的編號。")
                         
                 else:
                     print("無效的編號。")
