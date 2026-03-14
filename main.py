@@ -136,10 +136,90 @@ def main():
                         
                         print(f"✅ 成功跳轉！你現在位於: {enter_res.url}")
                         
-                        # 為了驗證我們真的進去了，把進入後的網頁存下來看看
-                        with open("course_main.html", "w", encoding="utf-8") as f:
-                            f.write(enter_res.text)
-                        print("👉 已經將課程首頁 HTML 儲存為 course_main.html，裡面應該會有教材下載或公告的連結！")
+                        # ---------------- 新增：進入課程後的互動選單 ----------------
+                        while True:
+                            print("\n=== 🏫 課程功能選單 ===")
+                            print("[1] 📥 下載上課教材")
+                            print("[2] 📢 查看教師公告")
+                            print("[q] 返回 / 離開")
+                            action = input("\n請選擇功能: ")
+
+                            if action.lower() == 'q':
+                                print("👋 離開課程...")
+                                break
+
+                            elif action == '1':
+                                print("\n-> 正在掃描教材檔案...")
+                                course_soup = BeautifulSoup(enter_res.text, "html.parser")
+                                textbooks = []
+                                
+                                # 尋找所有包含 'getfile' (教材下載 API) 的超連結
+                                for link in course_soup.find_all("a"):
+                                    href = link.get("href", "")
+                                    if "getfile" in href.lower():
+                                        file_name = link.text.strip()
+                                        if not file_name:
+                                            file_name = "未命名檔案"
+                                        textbooks.append({"name": file_name, "link": href})
+                                
+                                if not textbooks:
+                                    print("⚠️ 這堂課目前沒有任何教材檔案。")
+                                else:
+                                    print("\n=== 📄 教材清單 ===")
+                                    for i, tb in enumerate(textbooks, 1):
+                                        print(f"[{i}] {tb['name']}")
+                                    print("===================")
+                                    
+                                    dl_choice = input("\n請輸入要下載的教材編號 (輸入 a 下載全部，q 取消): ")
+                                    import urllib.parse as urlparse
+                                    
+                                    # 定義下載檔案的小函式
+                                    def download_file(tb):
+                                        dl_url = urljoin(enter_res.url, tb["link"])
+                                        # 嘗試從網址中解析出原始檔名 (org_filename)
+                                        parsed = urlparse.urlparse(dl_url)
+                                        qs = urlparse.parse_qs(parsed.query)
+                                        # 如果網址裡有 org_filename 就用它，沒有就用網頁上顯示的字
+                                        org_filename = qs.get("org_filename", [tb['name']])[0]
+                                        # 處理 URL 編碼 (把 %E5%B9%B3... 轉回中文)
+                                        org_filename = urlparse.unquote(org_filename)
+                                        
+                                        # 移除檔名中可能導致存檔失敗的特殊字元
+                                        safe_filename = "".join([c for c in org_filename if c.isalnum() or c in ' ._-()【】']).rstrip()
+                                        if not safe_filename: safe_filename = "download_file.pdf"
+                                        
+                                        print(f"正在下載: {safe_filename}...")
+                                        dl_res = session.get(dl_url, verify=False)
+                                        with open(safe_filename, "wb") as f:
+                                            f.write(dl_res.content)
+                                        print(f"✅ 下載完成！")
+                                    
+                                    # 處理使用者的下載選擇
+                                    if dl_choice.lower() == 'a':
+                                        for tb in textbooks:
+                                            download_file(tb)
+                                    elif dl_choice.isdigit():
+                                        idx = int(dl_choice) - 1
+                                        if 0 <= idx < len(textbooks):
+                                            download_file(textbooks[idx])
+                                        else:
+                                            print("❌ 無效的編號。")
+
+                            elif action == '2':
+                                print("\n-> 正在獲取教師公告...")
+                                # 直接帶著同一個 Session 去要公告頁面
+                                bulletin_url = urljoin(BASE_URL, "stu/stu_bulletin.aspx")
+                                bulletin_res = session.get(bulletin_url, verify=False)
+                                bulletin_soup = BeautifulSoup(bulletin_res.text, "html.parser")
+                                
+                                # 將公告 HTML 存下來，方便我們後續解析
+                                with open("bulletin_page.html", "w", encoding="utf-8") as f:
+                                    f.write(bulletin_soup.prettify())
+                                
+                                print("👉 已經將公告頁面下載並儲存為 bulletin_page.html。")
+                                print("你可以打開這個檔案看看裡面的表格結構，這樣我們下一階段就可以直接把公告標題跟內容印在終端機上了！")
+
+                        # -----------------------------------------------------------
                         
                 else:
                     print("無效的編號。")
