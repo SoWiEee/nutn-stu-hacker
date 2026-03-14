@@ -253,35 +253,39 @@ def main():
                                 bulletin_res = session.get(bulletin_url, verify=False)
                                 bulletin_soup = BeautifulSoup(bulletin_res.text, "html.parser")
                                 
-                                # 尋找包含公告的表格 (通常 ASP.NET 的 GridView 會是一個 table)
-                                # 我們尋找表頭有「標題」或「發布者」的表格
-                                tables = bulletin_soup.find_all("table")
-                                target_table = None
-                                for tbl in tables:
-                                    if "標題" in tbl.text or "發布日期" in tbl.text or "公告" in tbl.text:
-                                        target_table = tbl
-                                        break
-                                
-                                print(f"\n=== 📢 教師公告 ({safe_course_folder}) ===")
-                                if target_table:
-                                    rows = target_table.find_all("tr")
-                                    # 如果只有一行（通常是標題列 Header），或是表格內文包含「無資料」
-                                    if len(rows) <= 1 or "沒有" in target_table.text or "無" in target_table.text:
-                                        print("📭 目前沒有任何教師公告。")
-                                    else:
-                                        # 略過第一行的標題，把後面的資料印出來
-                                        for row in rows[1:]:
-                                            cols = row.find_all(["td", "th"])
-                                            # 把每個欄位的文字抓出來，並用 ' | ' 隔開排版
-                                            row_data = [col.text.strip() for col in cols if col.text.strip()]
-                                            if row_data:
-                                                print(" | ".join(row_data))
-                                else:
-                                    # 如果連 table 都沒找到，直接預設為空
-                                    print("📭 目前沒有任何教師公告。")
-                                print("=========================================")
+                                announcements = []
+                                # 逐列掃描所有的 <tr>
+                                for row in bulletin_soup.find_all("tr"):
+                                    cols = row.find_all(["td", "th"])
+                                    # 如果這列有 3 個以上的欄位，才有可能是真正的公告
+                                    if len(cols) >= 3:
+                                        # 取出文字並清理空白
+                                        col_texts = [col.text.strip() for col in cols if col.text.strip()]
+                                        row_string = " | ".join(col_texts)
+                                        
+                                        # 關鍵過濾：這行文字裡面必須要有 YYYY-MM-DD 的日期格式
+                                        if re.search(r'\d{4}-\d{2}-\d{2}', row_string):
+                                            # 如果第一個字是「檢視」，我們把它拿掉讓畫面更好看
+                                            if col_texts[0] == "檢視":
+                                                col_texts = col_texts[1:]
+                                            announcements.append(col_texts)
 
-                        # -----------------------------------------------------------
+                                print(f"\n=== 📢 教師公告 ({safe_course_folder}) ===")
+                                if not announcements:
+                                    print("📭 目前沒有任何教師公告。")
+                                else:
+                                    # 漂亮排版印出公告
+                                    for ann in announcements:
+                                        # 預期格式: [公告日期, 公告標題, 有效日期]
+                                        if len(ann) >= 3:
+                                            date = ann[0]
+                                            title = ann[1]
+                                            valid = ann[2]
+                                            print(f"📅 {date} | 📌 {title} (有效至: {valid})")
+                                        else:
+                                            # 防呆：如果格式不符合預期，就直接印出來
+                                            print(" | ".join(ann))
+                                print("=========================================")
                         
                 else:
                     print("無效的編號。")
