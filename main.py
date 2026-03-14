@@ -3,41 +3,43 @@ from bs4 import BeautifulSoup
 import getpass
 import os
 import urllib3
+import re
 from urllib.parse import urljoin
+from dotenv import load_dotenv
 
-# 關閉 urllib3 的 InsecureRequestWarning 警告，保持終端機畫面乾淨
+load_dotenv()
+
+# 關閉 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 設定目標網址 (如果登入頁有特定路徑如 /Login.aspx 請自行替換)
 BASE_URL = "https://ecourse.nutn.edu.tw/"
+
+def extract_hidden_fields(soup):
+    """小幫手：從 HTML 中萃取所有 ASP.NET 必須的隱藏欄位"""
+    payload = {}
+    for hidden_input in soup.find_all("input", type="hidden"):
+        name = hidden_input.get("name")
+        value = hidden_input.get("value", "")
+        if name:
+            payload[name] = value
+    return payload
 
 def main():
     print("🚀 啟動南大課程網登入腳本...")
-    
-    # 1. 建立 Session 來維持 Cookie
     session = requests.Session()
-    # 偽裝成正常的瀏覽器
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
 
     try:
-        # 2. GET 請求：獲取登入頁面的 HTML 與 ASP.NET 隱藏參數
+        # 1. 獲取登入頁面與隱藏參數
         print("-> 正在獲取登入頁面與隱藏參數...")
-        # 【修復重點】：加入 verify=False 強制略過 SSL 憑證檢查
         response = session.get(BASE_URL, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
+        payload = extract_hidden_fields(soup)
 
-        # 自動萃取所有 type="hidden" 的 <input> 標籤
-        payload = {}
-        for hidden_input in soup.find_all("input", type="hidden"):
-            name = hidden_input.get("name")
-            value = hidden_input.get("value", "")
-            if name:
-                payload[name] = value
-
-        # 3. 尋找並下載驗證碼圖片
+        # 2. 處理驗證碼
         captcha_url = None
         for img in soup.find_all("img"):
             src = img.get("src", "").lower()
@@ -49,37 +51,100 @@ def main():
         if captcha_url:
             full_captcha_url = urljoin(BASE_URL, captcha_url)
             print(f"-> 正在下載驗證碼圖片...")
-            # 【修復重點】：下載圖片一樣要略過 SSL 檢查
             captcha_res = session.get(full_captcha_url, verify=False)
             with open("captcha.png", "wb") as f:
                 f.write(captcha_res.content)
-            print("   ✅ 驗證碼已儲存為 captcha.png，請在資料夾中打開它！")
-        else:
-            print("   ⚠️ 找不到驗證碼圖片，可能會登入失敗。")
-
-        # 4. 終端機互動：安全地輸入帳號、密碼與驗證碼
-        print("\n--- 🔐 登入資訊 ---")
-        account = input("請輸入學號: ")
-        password = getpass.getpass("請輸入密碼: ") 
+            print("   ✅ 驗證碼已儲存為 captcha.png，請打開它！")
+        
+        # 3. 讀取帳密與驗證碼
+        # 優先從 .env 讀取，如果沒有才要求手動輸入
+        account = os.getenv("NUTN_ACCOUNT") or input("請輸入學號: ")
+        password = os.getenv("NUTN_PASSWORD") or getpass.getpass("請輸入密碼: ")
         captcha_code = input("請輸入 4 碼驗證碼: ")
 
         payload["ctl00$ContentPlaceHolder1$txtAccount"] = account
         payload["ctl00$ContentPlaceHolder1$txtPassword"] = password
         payload["ctl00$ContentPlaceHolder1$txtCode"] = captcha_code
 
-        # 5. POST 請求：送出表單
+        # 4. 送出登入請求
         print("\n-> 正在送出登入請求...")
-        # 【修復重點】：送出資料時也要略過 SSL 檢查
         post_response = session.post(BASE_URL, data=payload, verify=False)
 
-        # 6. 驗證登入是否成功
-        if "登出" in post_response.text or "個人設定" in post_response.text or account in post_response.text:
-            print("🎉 登入成功！你現在已經擁有合法的 Session Cookie 了。")
+        # 5. 驗證登入
+        if "登出" in post_response.text or account in post_response.text:
+            print("🎉 登入成功！")
+            
+            # --- 開始課程列表邏輯 ---
+            print("\n-> 正在獲取課程列表...")
+            course_list_url = urljoin(BASE_URL, "course_list.aspx")
+            course_res = session.get(course_list_url, verify=False)
+            course_soup = BeautifulSoup(course_res.text, "html.parser")
+            
+            # 準備等一下 PostBack 需要的當前頁面隱藏欄位
+            course_page_hidden_fields = extract_hidden_fields(course_soup)
+            
+            courses = []
+            enter_links = course_soup.find_all("a")
+            for link in enter_links:
+                if "進入" in link.text or link.get("title") == "進入":
+                    row = link.find_parent("tr")
+                    if row:
+                        columns = row.find_all("td")
+                        # 修正：[2]才是課程名稱，[4]是老師
+                        if len(columns) >= 5:
+                            course_name = columns[2].text.strip().replace('\n', '').replace('\r', '')
+                            teacher = columns[4].text.strip()
+                            course_action = link.get("href", "")
+                            
+                            courses.append({
+                                "name": f"{course_name} ({teacher})",
+                                "action": course_action
+                            })
+
+            if not courses:
+                print("⚠️ 找不到課程列表！")
+                return
+
+            print("\n=== 📚 你的這學期課程 ===")
+            for i, course in enumerate(courses, 1):
+                print(f"[{i}] {course['name']}")
+            print("========================")
+            
+            choice = input("\n請輸入想進入的課程編號 (輸入 q 退出): ")
+            if choice.lower() != 'q' and choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(courses):
+                    selected_course = courses[idx]
+                    print(f"\n🚀 正在進入: {selected_course['name']}...")
+                    
+                    # --- 破解 __doPostBack ---
+                    js_code = selected_course['action']
+                    # 利用正則表達式抽出 'ctl00$ContentPlaceHolder1$ListView1$ctrl4$LinkButton1'
+                    match = re.search(r"__doPostBack\('(.*?)','(.*?)'\)", js_code)
+                    if match:
+                        event_target = match.group(1)
+                        event_argument = match.group(2)
+                        
+                        # 組合進入課程的 Payload
+                        postback_payload = course_page_hidden_fields.copy()
+                        postback_payload["__EVENTTARGET"] = event_target
+                        postback_payload["__EVENTARGUMENT"] = event_argument
+                        
+                        # 向 course_list.aspx 發送 POST 來觸發進入課程
+                        # ASP.NET 驗證成功後通常會 302 重新導向到該課程的獨立網頁
+                        enter_res = session.post(course_list_url, data=postback_payload, verify=False, allow_redirects=True)
+                        
+                        print(f"✅ 成功跳轉！你現在位於: {enter_res.url}")
+                        
+                        # 為了驗證我們真的進去了，把進入後的網頁存下來看看
+                        with open("course_main.html", "w", encoding="utf-8") as f:
+                            f.write(enter_res.text)
+                        print("👉 已經將課程首頁 HTML 儲存為 course_main.html，裡面應該會有教材下載或公告的連結！")
+                        
+                else:
+                    print("無效的編號。")
         else:
-            print("❌ 登入失敗！請檢查帳號密碼，或是驗證碼輸入錯誤。")
-            with open("error_page.html", "w", encoding="utf-8") as f:
-                f.write(post_response.text)
-            print("   (已將錯誤網頁儲存為 error_page.html，可打開查看伺服器錯誤訊息)")
+            print("❌ 登入失敗！請檢查帳號密碼或驗證碼。")
 
     except Exception as e:
         print(f"發生錯誤: {e}")
