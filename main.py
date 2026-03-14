@@ -137,8 +137,11 @@ def main():
                         print(f"✅ 成功跳轉！你現在位於: {enter_res.url}")
                         
                         # ---------------- 新增：進入課程後的互動選單 ----------------
+                        # 處理課程名稱，移除 Windows/Mac 不能當作資料夾名稱的特殊字元
+                        safe_course_folder = re.sub(r'[\\/*?:"<>|]', "", selected_course['name']).strip()
+                        
                         while True:
-                            print("\n=== 🏫 課程功能選單 ===")
+                            print(f"\n=== 🏫 課程功能選單 ({safe_course_folder}) ===")
                             print("[1] 📥 下載上課教材")
                             print("[2] 📢 查看教師公告")
                             print("[q] 返回 / 離開")
@@ -176,23 +179,27 @@ def main():
                                     # 定義下載檔案的小函式
                                     def download_file(tb):
                                         dl_url = urljoin(enter_res.url, tb["link"])
-                                        # 嘗試從網址中解析出原始檔名 (org_filename)
                                         parsed = urlparse.urlparse(dl_url)
                                         qs = urlparse.parse_qs(parsed.query)
-                                        # 如果網址裡有 org_filename 就用它，沒有就用網頁上顯示的字
                                         org_filename = qs.get("org_filename", [tb['name']])[0]
-                                        # 處理 URL 編碼 (把 %E5%B9%B3... 轉回中文)
                                         org_filename = urlparse.unquote(org_filename)
                                         
-                                        # 移除檔名中可能導致存檔失敗的特殊字元
                                         safe_filename = "".join([c for c in org_filename if c.isalnum() or c in ' ._-()【】']).rstrip()
                                         if not safe_filename: safe_filename = "download_file.pdf"
                                         
+                                        # 建立課程專屬資料夾
+                                        if not os.path.exists(safe_course_folder):
+                                            os.makedirs(safe_course_folder)
+                                            print(f"📁 已建立資料夾: {safe_course_folder}")
+                                        
+                                        # 組合完整的存檔路徑
+                                        file_path = os.path.join(safe_course_folder, safe_filename)
+                                        
                                         print(f"正在下載: {safe_filename}...")
                                         dl_res = session.get(dl_url, verify=False)
-                                        with open(safe_filename, "wb") as f:
+                                        with open(file_path, "wb") as f:
                                             f.write(dl_res.content)
-                                        print(f"✅ 下載完成！")
+                                        print(f"✅ 下載完成！已儲存於 {file_path}")
                                     
                                     # 處理使用者的下載選擇
                                     if dl_choice.lower() == 'a':
@@ -207,17 +214,37 @@ def main():
 
                             elif action == '2':
                                 print("\n-> 正在獲取教師公告...")
-                                # 直接帶著同一個 Session 去要公告頁面
                                 bulletin_url = urljoin(BASE_URL, "stu/stu_bulletin.aspx")
                                 bulletin_res = session.get(bulletin_url, verify=False)
                                 bulletin_soup = BeautifulSoup(bulletin_res.text, "html.parser")
                                 
-                                # 將公告 HTML 存下來，方便我們後續解析
-                                with open("bulletin_page.html", "w", encoding="utf-8") as f:
-                                    f.write(bulletin_soup.prettify())
+                                # 尋找包含公告的表格 (通常 ASP.NET 的 GridView 會是一個 table)
+                                # 我們尋找表頭有「標題」或「發布者」的表格
+                                tables = bulletin_soup.find_all("table")
+                                target_table = None
+                                for tbl in tables:
+                                    if "標題" in tbl.text or "發布日期" in tbl.text or "公告" in tbl.text:
+                                        target_table = tbl
+                                        break
                                 
-                                print("👉 已經將公告頁面下載並儲存為 bulletin_page.html。")
-                                print("你可以打開這個檔案看看裡面的表格結構，這樣我們下一階段就可以直接把公告標題跟內容印在終端機上了！")
+                                print(f"\n=== 📢 教師公告 ({safe_course_folder}) ===")
+                                if target_table:
+                                    rows = target_table.find_all("tr")
+                                    # 如果只有一行（通常是標題列 Header），或是表格內文包含「無資料」
+                                    if len(rows) <= 1 or "沒有" in target_table.text or "無" in target_table.text:
+                                        print("📭 目前沒有任何教師公告。")
+                                    else:
+                                        # 略過第一行的標題，把後面的資料印出來
+                                        for row in rows[1:]:
+                                            cols = row.find_all(["td", "th"])
+                                            # 把每個欄位的文字抓出來，並用 ' | ' 隔開排版
+                                            row_data = [col.text.strip() for col in cols if col.text.strip()]
+                                            if row_data:
+                                                print(" | ".join(row_data))
+                                else:
+                                    # 如果連 table 都沒找到，直接預設為空
+                                    print("📭 目前沒有任何教師公告。")
+                                print("=========================================")
 
                         # -----------------------------------------------------------
                         
