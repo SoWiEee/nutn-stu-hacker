@@ -31,8 +31,8 @@ uv sync
 在專案根目錄建立一個 .env 檔案，填入你的南大入口帳密，登入時就可以免去手動輸入的麻煩：
 
 ```toml
-NUTN_ACCOUNT=你的學號
-NUTN_PASSWORD=你的密碼
+NUTN_ACCOUNT=<student id>
+NUTN_PASSWORD=<password>
 ```
 
 ### 3. Run
