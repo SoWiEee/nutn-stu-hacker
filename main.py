@@ -74,15 +74,54 @@ def main():
         if "登出" in post_response.text or account in post_response.text:
             print("🎉 登入成功！")
             
-            # --- 開始課程列表邏輯 ---
-            print("\n-> 正在獲取課程列表...")
+            # --- 獲取預設課程列表與學期清單 ---
+            print("\n-> 正在獲取資料...")
             course_list_url = urljoin(BASE_URL, "course_list.aspx")
             course_res = session.get(course_list_url, verify=False)
             course_soup = BeautifulSoup(course_res.text, "html.parser")
-            
-            # 準備等一下 PostBack 需要的當前頁面隱藏欄位
             course_page_hidden_fields = extract_hidden_fields(course_soup)
             
+            # --- 解析並顯示學期選單 ---
+            dropdown = course_soup.find("select", {"name": "ctl00$ContentPlaceHolder1$Drop_syear"})
+            semesters = []
+            if dropdown:
+                for opt in dropdown.find_all("option"):
+                    semesters.append({
+                        "text": opt.text.strip(),
+                        "value": opt.get("value"),
+                        "is_selected": opt.has_attr("selected")
+                    })
+            
+            if semesters:
+                print("\n=== 📅 選擇學期 ===")
+                for i, sem in enumerate(semesters, 1):
+                    mark = " (*目前學期)" if sem.get("is_selected") else ""
+                    print(f"[{i}] {sem['text']}{mark}")
+                print("===================")
+                
+                sem_choice = input("\n請輸入想查看的學期編號 (直接按 Enter 預設為當前學期): ")
+                if sem_choice.isdigit():
+                    idx = int(sem_choice) - 1
+                    if 0 <= idx < len(semesters):
+                        selected_sem = semesters[idx]
+                        
+                        # 如果選擇的不是預設學期，我們就需要發送 PostBack 請求切換學期
+                        if not selected_sem.get("is_selected"):
+                            print(f"\n-> 正在切換至 {selected_sem['text']}...")
+                            postback_payload = course_page_hidden_fields.copy()
+                            postback_payload["__EVENTTARGET"] = "ctl00$ContentPlaceHolder1$Drop_syear"
+                            postback_payload["__EVENTARGUMENT"] = ""
+                            postback_payload["ctl00$ContentPlaceHolder1$Drop_syear"] = selected_sem["value"]
+                            
+                            # 發送 POST 要求伺服器回傳該學期的資料
+                            course_res = session.post(course_list_url, data=postback_payload, verify=False)
+                            course_soup = BeautifulSoup(course_res.text, "html.parser")
+                            
+                            # 【極度重要】學期切換後，網頁的隱藏驗證碼 (__VIEWSTATE) 會全部更新
+                            # 我們必須重新抓取，否則下一步點擊進入課程會失敗！
+                            course_page_hidden_fields = extract_hidden_fields(course_soup)
+            
+            # --- 解析課程列表 (會根據上面選擇的學期而定) ---
             courses = []
             enter_links = course_soup.find_all("a")
             for link in enter_links:
@@ -90,7 +129,6 @@ def main():
                     row = link.find_parent("tr")
                     if row:
                         columns = row.find_all("td")
-                        # 修正：[2]才是課程名稱，[4]是老師
                         if len(columns) >= 5:
                             course_name = columns[2].text.strip().replace('\n', '').replace('\r', '')
                             teacher = columns[4].text.strip()
@@ -102,10 +140,10 @@ def main():
                             })
 
             if not courses:
-                print("⚠️ 找不到課程列表！")
+                print("⚠️ 這個學期找不到任何課程！")
                 return
 
-            print("\n=== 📚 你的這學期課程 ===")
+            print("\n=== 📚 你的課程清單 ===")
             for i, course in enumerate(courses, 1):
                 print(f"[{i}] {course['name']}")
             print("========================")
@@ -117,21 +155,18 @@ def main():
                     selected_course = courses[idx]
                     print(f"\n🚀 正在進入: {selected_course['name']}...")
                     
-                    # --- 破解 __doPostBack ---
+                    # --- 破解 __doPostBack 進入課程 ---
                     js_code = selected_course['action']
-                    # 利用正則表達式抽出 'ctl00$ContentPlaceHolder1$ListView1$ctrl4$LinkButton1'
                     match = re.search(r"__doPostBack\('(.*?)','(.*?)'\)", js_code)
                     if match:
                         event_target = match.group(1)
                         event_argument = match.group(2)
                         
-                        # 組合進入課程的 Payload
+                        # 使用「最新」的隱藏欄位組合 Payload
                         postback_payload = course_page_hidden_fields.copy()
                         postback_payload["__EVENTTARGET"] = event_target
                         postback_payload["__EVENTARGUMENT"] = event_argument
                         
-                        # 向 course_list.aspx 發送 POST 來觸發進入課程
-                        # ASP.NET 驗證成功後通常會 302 重新導向到該課程的獨立網頁
                         enter_res = session.post(course_list_url, data=postback_payload, verify=False, allow_redirects=True)
                         
                         print(f"✅ 成功跳轉！你現在位於: {enter_res.url}")
