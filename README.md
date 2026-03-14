@@ -47,3 +47,11 @@ python3 main.py
 # General
 uv run main.py
 ```
+
+### 4. Use More Powerful Skills
+
+```bash
+npx skills add anthropics/skills
+npx skills add blader/humanizer
+npx skills add kevintsai1202/Humanizer-zh-TW
+```
